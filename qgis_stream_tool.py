@@ -1,6 +1,6 @@
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QKeySequence, QColor
-from PyQt5.QtWidgets import QShortcut
+from PyQt5.QtWidgets import QShortcut, QMessageBox
 from qgis.core import (
     Qgis,
     QgsFeature,
@@ -156,6 +156,31 @@ class StreamReshapeTool(QgsMapTool):
     def _cancel(self):
         if not self.points:
             _info("No reshape in progress — exiting tool (ESC pressed).")
+
+            # Exit the edit mode with confirmation
+            if self.layer.isEditable():
+                if self.layer.isModified():
+                    reply = QMessageBox.question(
+                        self.canvas,
+                        "Save Changes?",
+                        "Do you want to save your changes before exiting?",
+                        QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+                        QMessageBox.Save
+                    )
+
+                    if reply == QMessageBox.Save:
+                        self.layer.commitChanges()
+                        _info("Changes saved before exiting.")
+                    elif reply == QMessageBox.Discard:
+                        self.layer.rollBack()
+                        _info("Changes discarded.")
+                    else:  # Cancel - don't exit
+                        _info("Canceled exit operation.")
+                        return
+                else:
+                    _info("No changes to save before exiting.")
+                    self.layer.commitChanges()  # Just for disabling the edit mode
+
             iface.actionPan().trigger()
         else:
             self.points = []
