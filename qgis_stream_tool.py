@@ -10,11 +10,19 @@ from qgis.core import (
 )
 from qgis.gui import QgsMapTool, QgsRubberBand
 
+
 # TODO:
 #  - Add functionality to handle Z values in geometry
 #  - Add functionality to handle the difference in the CRS of the layer and the map canvas
-#  - Refactor the log messages
 #  - (maybe) create a QGIS plugin for this tool
+
+
+def _warn(message):
+    QgsMessageLog.logMessage(message, "StreamTool", level=Qgis.Warning)
+
+
+def _info(message):
+    QgsMessageLog.logMessage(message, "StreamTool", level=Qgis.Info)
 
 
 class StreamReshapeTool(QgsMapTool):
@@ -73,11 +81,7 @@ class StreamReshapeTool(QgsMapTool):
         if not self.drawing_mode:
             selected = self.layer.selectedFeatures()
             if len(selected) != 1:
-                QgsMessageLog.logMessage(
-                    "Please select exactly one polygon feature. StreamTool",
-                    "StreamTool",
-                    level=Qgis.Warning
-                )
+                _warn("Please select exactly one polygon feature (you're in Reshape mode).")
                 return
             self.selected_fid = selected[0].id()
 
@@ -129,16 +133,14 @@ class StreamReshapeTool(QgsMapTool):
     def _toggle_stream_mode(self):
         self.stream_enabled = not self.stream_enabled
         mode = "STREAMING" if self.stream_enabled else "MANUAL"
-        QgsMessageLog.logMessage(
+        _info(
             f"Digitizing Mode Toggled. Now in {mode} mode. "
-            f"{'Auto add every 5m' if self.stream_enabled else 'Add vertex manually with Space'}",
-            "StreamTool",
-            level=Qgis.Info
+            f"{'Vertices are added every 5m.' if self.stream_enabled else 'Add vertex manually by pressing Space.'}",
         )
 
     def _cancel(self):
         if not self.points:
-            QgsMessageLog.logMessage("No reshape in progress — exiting tool (ESC pressed).", "StreamTool", Qgis.Info)
+            _info("No reshape in progress — exiting tool (ESC pressed).")
             iface.actionPan().trigger()
         else:
             self.points = []
@@ -147,12 +149,12 @@ class StreamReshapeTool(QgsMapTool):
             self.preview_band.reset(QgsWkbTypes.PolygonGeometry)
             self.intersection_band.reset(QgsWkbTypes.PointGeometry)
             self.canvas.refresh()
-            QgsMessageLog.logMessage("Drawing canceled (ESC pressed)", "StreamTool", Qgis.Info)
+            _info("Drawing canceled (ESC pressed).")
 
     def _toggle_draw_mode(self):
         self.drawing_mode = not self.drawing_mode
         mode = "DRAWING (Contour)" if self.drawing_mode else "RESHAPE"
-        QgsMessageLog.logMessage(f"Mode Switched. You are now in: {mode} mode.", "StreamTool", Qgis.Info)
+        _info(f"Mode Switched. You are now in: {mode} mode.")
 
     def _add_vertex_from_cursor(self):
         if self.streaming and self.current_cursor_pos:
@@ -181,11 +183,7 @@ class StreamReshapeTool(QgsMapTool):
                 feature = selected[0]
                 geom = feature.geometry()
                 if not geom or geom.isEmpty() or not geom.isGeosValid():
-                    QgsMessageLog.logMessage(
-                        "Feature geometry is missing or invalid in _update_rubber_band",
-                        "StreamTool",
-                        Qgis.Warning
-                    )
+                    _warn("Feature geometry is missing or invalid in _update_rubber_band")
                     return
                 reshape_line = QgsGeometry.fromPolylineXY(self.points)
                 boundary_geom = QgsGeometry(geom.constGet().boundary())
@@ -199,7 +197,7 @@ class StreamReshapeTool(QgsMapTool):
 
     def _finish_reshape(self):
         if not self.streaming or len(self.points) < 2:
-            QgsMessageLog.logMessage("Draw a reshape line with at least 2 points.", "StreamTool", Qgis.Warning)
+            _warn("Draw a reshape line with at least 2 points.")
             return
 
         self.layer.beginEditCommand("Stream Edit")
@@ -211,19 +209,15 @@ class StreamReshapeTool(QgsMapTool):
             success = self.layer.addFeature(feature)
             self.canvas.refresh()
             if success:
-                QgsMessageLog.logMessage("Polygon feature added.", "StreamTool", Qgis.Info)
+                _info("Polygon feature added.")
             else:
-                QgsMessageLog.logMessage(
-                    "Failed to add polygon feature — layer may not be editable or geometry is invalid.",
-                    "StreamTool",
-                    Qgis.Warning
-                )
+                _warn("Failed to add polygon feature — layer may not be editable or geometry is invalid.")
             if not polygon_geom or not polygon_geom.isGeosValid():
-                QgsMessageLog.logMessage("Polygon geometry is invalid or empty.", "StreamTool", Qgis.Warning)
+                _warn("Polygon geometry is invalid or empty.")
         else:
             selected = self.layer.selectedFeatures()
             if len(selected) != 1:
-                QgsMessageLog.logMessage("No feature selected to reshape.", "StreamTool", Qgis.Warning)
+                _warn("No feature selected to reshape.")
                 self.layer.destroyEditCommand()
                 return
 
@@ -234,11 +228,10 @@ class StreamReshapeTool(QgsMapTool):
 
             # Warn if geometry has Z values
             if QgsWkbTypes.hasZ(feature_geom.wkbType()):
-                QgsMessageLog.logMessage("Geometry has Z values (3D) — reshaping may not work.", "StreamTool",
-                                         Qgis.Warning)
+                _warn("Geometry has Z values (3D) — reshaping may not work.")
 
             if feature_geom.isEmpty() or not feature_geom.isGeosValid():
-                QgsMessageLog.logMessage("Feature geometry is empty or invalid.", "StreamTool", Qgis.Warning)
+                _warn("Feature geometry is empty or invalid.")
                 self.layer.destroyEditCommand()
                 return
 
@@ -253,16 +246,12 @@ class StreamReshapeTool(QgsMapTool):
 
             status = feature_geom.reshapeGeometry(reshape_line.constGet())
             if status != QgsGeometry.OperationResult.Success:
-                QgsMessageLog.logMessage(
-                    "Reshape failed. Ensure the line crosses the polygon boundary.",
-                    "StreamTool",
-                    Qgis.Warning
-                )
+                _warn("Reshape failed. Ensure the line crosses the polygon boundary.")
                 self.layer.destroyEditCommand()
                 return
 
             self.layer.changeGeometry(selected_fid, feature_geom)
-            QgsMessageLog.logMessage("Polygon successfully reshaped.", "StreamTool", Qgis.Info)
+            _info("Polygon successfully reshaped.")
 
         self.layer.endEditCommand()
         self.points = []
@@ -283,4 +272,4 @@ except Exception:
 # Start new reshape tool
 reshape_tool = StreamReshapeTool(iface.mapCanvas())
 iface.mapCanvas().setMapTool(reshape_tool)
-QgsMessageLog.logMessage("StreamReshapeTool activated.", "StreamTool", Qgis.Info)
+_info("StreamReshapeTool activated.")
