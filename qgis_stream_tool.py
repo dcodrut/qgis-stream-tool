@@ -356,8 +356,15 @@ class StreamReshapeTool(QgsMapTool):
 
         self.layer.selectByIds([next_feature.id()])
 
-        # Zoom to extent.
-        self.canvas.setExtent(next_feature.geometry().boundingBox())
+        # Zoom to extent + 20% buffer
+        bbox = next_feature.geometry().boundingBox()  # Get original bounding box
+        buffer_factor = 0.2  # 20% of width/height
+        width = bbox.width() * buffer_factor
+        height = bbox.height() * buffer_factor
+        buffered_bbox = bbox.buffered(max(width, height))
+
+        self.canvas.setExtent(buffered_bbox)  # Set canvas extent to buffered bounding box
+
         self.canvas.refresh()
         _info("Navigated to next feature.")
 
