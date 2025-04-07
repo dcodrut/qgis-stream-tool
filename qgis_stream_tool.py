@@ -80,6 +80,12 @@ class StreamReshapeTool(QgsMapTool):
         self.intersection_band.setColor(Qt.green)
         self.intersection_band.setWidth(5)
 
+        self.next_shortcut = QShortcut(QKeySequence("]"), self.canvas)
+        self.next_shortcut.activated.connect(self._navigate_next)
+
+        self.prev_shortcut = QShortcut(QKeySequence("["), self.canvas)
+        self.prev_shortcut.activated.connect(self._navigate_prev)
+
     def activate(self):
         super().activate()
         self.canvas.setCursor(Qt.CrossCursor)
@@ -102,6 +108,8 @@ class StreamReshapeTool(QgsMapTool):
         self.toggle_shortcut.setEnabled(True)
         self.cancel_shortcut.setEnabled(True)
         self.save_shortcut.setEnabled(True)
+        self.next_shortcut.setEnabled(True)
+        self.prev_shortcut.setEnabled(True)
 
         self.canvas.setFocus()
 
@@ -113,6 +121,8 @@ class StreamReshapeTool(QgsMapTool):
         self.cancel_shortcut.setEnabled(False)
         self.mode_toggle.setEnabled(False)
         self.save_shortcut.setEnabled(False)
+        self.next_shortcut.setEnabled(False)
+        self.prev_shortcut.setEnabled(False)
 
         super().deactivate()
 
@@ -300,6 +310,64 @@ class StreamReshapeTool(QgsMapTool):
         self.preview_band.reset(QgsWkbTypes.PolygonGeometry)
         self.intersection_band.reset(QgsWkbTypes.PointGeometry)
         self.canvas.refresh()
+
+    def _navigate(self, where_to="next"):
+        if self.points:  # Reshape in progress; do nothing.
+            _warn("Navigation disabled - a reshape is in progress.")
+            return
+
+        feature_list = [f for f in self.layer.getFeatures()]
+        if not feature_list:
+            _warn("No features found in the layer.")
+            return
+
+        current_feature = None
+        selected = self.layer.selectedFeatures()
+        if selected:
+            current_feature = selected[0]
+
+        # Find the index of currently selected feature.
+        idx = 0
+        if current_feature:
+            for i, feat in enumerate(feature_list):
+                if feat.id() == current_feature.id():
+                    _info(f"Current feature ID: {current_feature.id()}")
+                    idx = i
+                    break
+
+        # Navigate to next/prev (wrap around if needed).
+        if where_to == "next":
+            if idx == len(feature_list) - 1:
+                _info("Reached the last feature. Wrapping to the first.")
+                next_idx = 0
+            else:
+                next_idx = idx + 1
+        elif where_to == "prev":
+            if idx == 0:
+                _info("Reached the first feature. Wrapping to the last.")
+                next_idx = len(feature_list) - 1
+            else:
+                next_idx = idx - 1
+        _info(f"Next feature ID: {feature_list[next_idx].id()}")
+        next_feature = feature_list[next_idx]
+
+        # Deselect current polygon.
+        self.layer.removeSelection()
+
+        self.layer.selectByIds([next_feature.id()])
+
+        # Zoom to extent.
+        self.canvas.setExtent(next_feature.geometry().boundingBox())
+        self.canvas.refresh()
+        _info("Navigated to next feature.")
+
+    def _navigate_next(self):
+        _info("Navigating to next feature.")
+        self._navigate("next")
+
+    def _navigate_prev(self):
+        _info("Navigating to previous feature.")
+        self._navigate("prev")
 
     def _save_edits(self):
         if not self.layer.isEditable():
