@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QKeySequence, QColor
 from PyQt5.QtWidgets import QShortcut
 from qgis.core import (
@@ -282,8 +282,18 @@ class StreamReshapeTool(QgsMapTool):
             return
         if self.layer.commitChanges():
             _info("Edits saved successfully.")
+
+            # Use a timer to toggle editing back on after a short delay & re-enable the edit mode.
+            QTimer.singleShot(100, self._restart_editing)  # 100ms delay
         else:
             _warn("Failed to save edits.")
+
+    def _restart_editing(self):
+        if not self.layer.isEditable():
+            self.layer.startEditing()
+            _info("Editing mode re-enabled.")
+
+            self.canvas.refresh()
 
 
 # Stop previous tool if needed
