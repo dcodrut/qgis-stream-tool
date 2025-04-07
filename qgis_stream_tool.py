@@ -6,16 +6,24 @@ from qgis.core import (
     QgsFeature,
     QgsGeometry,
     QgsWkbTypes,
-    QgsMessageLog
+    QgsMessageLog,
+    QgsProject,
+    QgsLayerTreeGroup,
 )
 from qgis.gui import QgsMapTool, QgsRubberBand
 
 
 # TODO:
-#  - Add functionality to handle Z values in geometry
-#  - Add functionality to handle the difference in the CRS of the layer and the map canvas
-#  - (maybe) create a QGIS plugin for this tool
-
+#  - Handle Z values in geometry
+#  - Handle CRS differences between layer and map canvas
+#  - Check if layer is editable & feature is selected
+#  - Check behavior when adding a new feature (e.g. IDs)
+#  - Investigate reshape issues with intersection points
+#  - Show intersection points for the next segment
+#  - Add a shortcut to save edits
+#  - Ensure polygon layer is selected before starting
+#  - Ensure edits are enabled in reshape mode
+#  - Consider creating a QGIS plugin for this tool
 
 def _warn(message):
     QgsMessageLog.logMessage(message, "StreamTool", level=Qgis.Warning)
@@ -48,6 +56,7 @@ class StreamReshapeTool(QgsMapTool):
 
         self.finish_shortcut = QShortcut(QKeySequence("Return"), self.canvas)
         self.finish_shortcut.activated.connect(self._finish_reshape)
+
         self.space_shortcut = QShortcut(QKeySequence(Qt.Key_Space), self.canvas)
         self.space_shortcut.activated.connect(self._add_vertex_from_cursor)
 
@@ -64,6 +73,9 @@ class StreamReshapeTool(QgsMapTool):
         self.cancel_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self.canvas)
         self.cancel_shortcut.activated.connect(self._cancel)
 
+        self.save_shortcut = QShortcut(QKeySequence("S"), self.canvas)
+        self.save_shortcut.activated.connect(self._save_edits)
+
         self.intersection_band = QgsRubberBand(canvas, QgsWkbTypes.PointGeometry)
         self.intersection_band.setColor(Qt.green)
         self.intersection_band.setWidth(5)
@@ -71,7 +83,6 @@ class StreamReshapeTool(QgsMapTool):
     def activate(self):
         super().activate()
         self.canvas.setCursor(Qt.CrossCursor)
-        self.canvas.setFocus()
         self.points = []
         self.streaming = False
         self.rubber_band.reset(QgsWkbTypes.LineGeometry)
@@ -85,12 +96,14 @@ class StreamReshapeTool(QgsMapTool):
                 return
             self.selected_fid = selected[0].id()
 
-        self.canvas.setFocus()
         self.mode_toggle.setEnabled(True)
         self.finish_shortcut.setEnabled(True)
         self.space_shortcut.setEnabled(True)
         self.toggle_shortcut.setEnabled(True)
         self.cancel_shortcut.setEnabled(True)
+        self.save_shortcut.setEnabled(True)
+
+        self.canvas.setFocus()
 
     def deactivate(self):
         self.rubber_band.reset(QgsWkbTypes.LineGeometry)
@@ -99,6 +112,8 @@ class StreamReshapeTool(QgsMapTool):
         self.toggle_shortcut.setEnabled(False)
         self.cancel_shortcut.setEnabled(False)
         self.mode_toggle.setEnabled(False)
+        self.save_shortcut.setEnabled(False)
+
         super().deactivate()
 
     def canvasPressEvent(self, event):
@@ -261,9 +276,19 @@ class StreamReshapeTool(QgsMapTool):
         self.intersection_band.reset(QgsWkbTypes.PointGeometry)
         self.canvas.refresh()
 
+    def _save_edits(self):
+        if not self.layer.isEditable():
+            _warn("Layer is not editable.")
+            return
+        if self.layer.commitChanges():
+            _info("Edits saved successfully.")
+        else:
+            _warn("Failed to save edits.")
+
 
 # Stop previous tool if needed
 try:
+    _info("Stopping previous tool...")
     iface.actionPan().trigger()
     del reshape_tool
 except Exception:
