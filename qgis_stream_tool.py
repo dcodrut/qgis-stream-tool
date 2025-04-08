@@ -24,6 +24,7 @@ from qgis.gui import QgsMapTool, QgsRubberBand
 #  - Ensure polygon layer is selected before starting
 #  - Ensure edits are enabled in reshape mode
 #  - Consider creating a QGIS plugin for this tool
+#  - Check what happens when multiple features are selected
 
 def _warn(message):
     QgsMessageLog.logMessage(message, "StreamTool", level=Qgis.Warning)
@@ -86,6 +87,13 @@ class StreamReshapeTool(QgsMapTool):
         self.prev_shortcut = QShortcut(QKeySequence("["), self.canvas)
         self.prev_shortcut.activated.connect(self._navigate_prev)
 
+        self.group_keys = {}
+        for i in range(10):
+            key = str(i)
+            shortcut = QShortcut(QKeySequence(key), self.canvas)
+            shortcut.activated.connect(lambda n=i: self._switch_group(f"g_{n}"))
+            self.group_keys[key] = shortcut
+
     def activate(self):
         super().activate()
         self.canvas.setCursor(Qt.CrossCursor)
@@ -111,6 +119,9 @@ class StreamReshapeTool(QgsMapTool):
         self.next_shortcut.setEnabled(True)
         self.prev_shortcut.setEnabled(True)
 
+        for shortcut in self.group_keys.values():
+            shortcut.setEnabled(True)
+
         self.canvas.setFocus()
 
     def deactivate(self):
@@ -123,6 +134,9 @@ class StreamReshapeTool(QgsMapTool):
         self.save_shortcut.setEnabled(False)
         self.next_shortcut.setEnabled(False)
         self.prev_shortcut.setEnabled(False)
+
+        for shortcut in self.group_keys.values():
+            shortcut.setEnabled(False)
 
         super().deactivate()
 
@@ -154,6 +168,28 @@ class StreamReshapeTool(QgsMapTool):
             self.points.append(pt)
             self._update_rubber_band()
             self._finish_reshape()
+
+    def _switch_group(self, group_prefix_to_show):
+        root = QgsProject.instance().layerTreeRoot()
+
+        # check if our special group exists
+        target_group = root.findGroup('qgis_stream_tool')
+        if target_group is None:
+            _warn("Group 'qgis_stream_tool' not found.")
+            return
+
+        group_name_found = None
+        for child in target_group.children():
+            if child.name()[:3] == group_prefix_to_show:
+                _info(f"Switching to group '{child.name()}'")
+                child.setItemVisibilityChecked(True)
+                group_name_found = child.name()
+            else:
+                child.setItemVisibilityChecked(False)
+
+        if group_name_found is None:
+            _warn(f"Group with the prefix '{group_prefix_to_show}' not found.")
+            return
 
     def _toggle_stream_mode(self):
         self.stream_enabled = not self.stream_enabled
