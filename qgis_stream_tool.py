@@ -34,6 +34,10 @@ def _info(message):
     QgsMessageLog.logMessage(message, "StreamTool", level=Qgis.Info)
 
 
+def _debug(message):
+    QgsMessageLog.logMessage(f"Debug: {message}", "StreamTool", level=Qgis.Info)
+
+
 class StreamReshapeTool(QgsMapTool):
     def __init__(self, canvas):
         super().__init__(canvas)
@@ -281,12 +285,104 @@ class StreamReshapeTool(QgsMapTool):
                 elif intersection and intersection.wkbType() == QgsWkbTypes.Point:
                     self.intersection_band.addPoint(intersection.asPoint())
 
+    def _delete_circumvented_feature(self, drawn_polygon):
+        """Delete a ring or part that is completely contained within the drawn polygon."""
+        selected = self.layer.selectedFeatures()
+        if not selected:
+            _warn("No feature selected")
+            return False
+
+        feature = selected[0]
+        geometry = feature.geometry()
+
+        # Local function to check if a ring should be kept
+        def should_keep_ring(ring, ring_index=None, part_index=None):
+            # Create a proper ring geometry for containment testing
+            ring_geom = QgsGeometry.fromPolygonXY([ring])
+
+            # Keep the ring if it's not completely contained in the drawn polygon
+            return not drawn_polygon.contains(ring_geom)
+
+        # Local function to process a single polygon (whether standalone or part of multipolygon)
+        def process_polygon(polygon, part_index=None):
+            exterior_ring = polygon[0]
+            rings_to_keep = [exterior_ring]  # Always keep the exterior ring
+
+            # Check each interior ring (hole)
+            for i in range(1, len(polygon)):
+                ring = polygon[i]
+                if should_keep_ring(ring, i, part_index):
+                    rings_to_keep.append(ring)
+
+            # Return the processed polygon and whether it was modified
+            return rings_to_keep, len(rings_to_keep) < len(polygon)
+
+        # For multi-polygon features
+        modified = False
+        if QgsWkbTypes.isMultiType(geometry.wkbType()):
+            multi_polygon = geometry.asMultiPolygon()
+            new_multi_polygon = []
+
+            for i_part, part in enumerate(multi_polygon):
+                new_part, part_modified = process_polygon(part, i_part)
+
+                # Only keep parts whose exterior rings aren't contained
+                exterior_points = QgsGeometry.fromPolylineXY(part[0])
+                if not drawn_polygon.contains(exterior_points):
+                    new_multi_polygon.append(new_part)
+                    modified = modified or part_modified
+                    if part_modified:
+                        _info(
+                            f"Deleted {len(part) - len(new_part)} ring(s) out of {len(part)} "
+                            f"from part {i_part + 1} out of {len(multi_polygon)}"
+                        )
+
+            if len(new_multi_polygon) < len(multi_polygon):
+                modified = True
+
+            if modified:
+                new_geometry = QgsGeometry.fromMultiPolygonXY(new_multi_polygon)
+
+        # For single polygons
+        elif geometry.type() == QgsWkbTypes.PolygonGeometry:
+            polygon = geometry.asPolygon()
+            rings_to_keep, polygon_modified = process_polygon(polygon)
+
+            if polygon_modified:
+                new_geometry = QgsGeometry.fromPolygonXY(rings_to_keep)
+                _info("Deleted a ring from the polygon")
+                modified = True
+
+        if modified:
+            self.layer.changeGeometry(feature.id(), new_geometry)
+            return True
+
+        return False
+
     def _finish_reshape(self):
         if not self.streaming or len(self.points) < 2:
             _warn("Draw a reshape line with at least 2 points.")
             return
 
         self.layer.beginEditCommand("Stream Edit")
+
+        if not self.drawing_mode:
+            # close the loop
+            closed_points = self.points + [self.points[0]]
+            polygon_geom = QgsGeometry.fromPolygonXY([closed_points])
+
+            # attempt to delete contained rings/parts in reshape mode
+            if self._delete_circumvented_feature(polygon_geom):
+                # Feature modified, clean up and return
+                self.layer.endEditCommand()
+                self.points = []
+                self.streaming = False
+                self.rubber_band.reset(QgsWkbTypes.LineGeometry)
+                self.preview_band.reset(QgsWkbTypes.PolygonGeometry)
+                self.intersection_band.reset(QgsWkbTypes.PointGeometry)
+                self.canvas.refresh()
+                return
+
         if self.drawing_mode:
             ring = self.points + [self.points[0]]
             polygon_geom = QgsGeometry.fromPolygonXY([ring])
@@ -403,6 +499,24 @@ class StreamReshapeTool(QgsMapTool):
 
         self.canvas.refresh()
         _info("Navigated to next feature.")
+
+        # From the special group, disable the items corresponding to the other glaciers
+        root = QgsProject.instance().layerTreeRoot()
+        target_group = root.findGroup('qgis_stream_tool')
+        if target_group is None:
+            return
+
+        selected_feature = self.layer.selectedFeatures()
+        if not selected_feature:
+            return
+
+        feature = selected_feature[0]
+        entry_id = feature['entry_id']
+        _info(f"Entry ID: {entry_id}")
+        for child in target_group.children():
+            if isinstance(child, QgsLayerTreeGroup) and 's2_' in child.name():
+                for crt_layer in child.children():
+                    crt_layer.setItemVisibilityChecked(entry_id in crt_layer.name())
 
     def _navigate_next(self):
         _info("Navigating to next feature.")
