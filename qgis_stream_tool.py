@@ -369,6 +369,16 @@ class StreamReshapeTool(QgsMapTool):
 
         self.layer.beginEditCommand("Stream Edit")
 
+        def _apply_changes():
+            # Feature modified, clean up and return
+            self.layer.endEditCommand()
+            self.points = []
+            self.streaming = False
+            self.rubber_band.reset(QgsWkbTypes.LineGeometry)
+            self.preview_band.reset(QgsWkbTypes.PolygonGeometry)
+            self.intersection_band.reset(QgsWkbTypes.PointGeometry)
+            self.canvas.refresh()
+
         if not self.drawing_mode:
             # close the loop
             closed_points = self.points + [self.points[0]]
@@ -376,15 +386,85 @@ class StreamReshapeTool(QgsMapTool):
 
             # attempt to delete contained rings/parts in reshape mode
             if self._delete_circumvented_feature(polygon_geom):
-                # Feature modified, clean up and return
-                self.layer.endEditCommand()
-                self.points = []
-                self.streaming = False
-                self.rubber_band.reset(QgsWkbTypes.LineGeometry)
-                self.preview_band.reset(QgsWkbTypes.PolygonGeometry)
-                self.intersection_band.reset(QgsWkbTypes.PointGeometry)
-                self.canvas.refresh()
+                _apply_changes()
                 return
+
+            # Check if we need to add a new part (only in reshape mode)
+            selected = self.layer.selectedFeatures()
+            if len(selected) == 1:
+                feature = selected[0]
+                feature_geom = feature.geometry()
+
+                # Check if the drawn polygon intersects the current feature
+                intersects = feature_geom.intersects(polygon_geom)
+
+                # Check if the drawn polygon circumvents any part of the feature
+                circumvents = False
+                if QgsWkbTypes.isMultiType(feature_geom.wkbType()):
+                    multi_polygon = feature_geom.asMultiPolygon()
+                    for part in multi_polygon:
+                        for ring in part:
+                            ring_geom = QgsGeometry.fromPolygonXY([ring])
+                            if polygon_geom.contains(ring_geom):
+                                circumvents = True
+                                break
+                        if circumvents:
+                            break
+                else:
+                    polygon = feature_geom.asPolygon()
+                    for ring in polygon:
+                        ring_geom = QgsGeometry.fromPolygonXY([ring])
+                        if polygon_geom.contains(ring_geom):
+                            circumvents = True
+                            break
+
+                # If neither intersects nor circumvents, add as new part
+                if not intersects and not circumvents:
+                    if not QgsWkbTypes.isMultiType(feature_geom.wkbType()):
+                        # Single polygon - convert to multi-polygon
+                        multipolygon = []
+                        multipolygon.append(feature_geom.asPolygon())  # Add existing polygon as first part
+                        multipolygon.append([closed_points])  # Add new polygon as second part
+                        new_geom = QgsGeometry.fromMultiPolygonXY(multipolygon)
+                        self.layer.changeGeometry(feature.id(), new_geom)
+                        _info("Added new part to feature (converted to multi-polygon)")
+                    else:
+                        # Already a multi-polygon
+                        multipolygon = feature_geom.asMultiPolygon()
+                        multipolygon.append([closed_points])
+                        new_geom = QgsGeometry.fromMultiPolygonXY(multipolygon)
+                        self.layer.changeGeometry(feature.id(), new_geom)
+                        _info("Added new part to multi-polygon feature")
+
+                    # Feature modified, clean up and return
+                    _apply_changes()
+                    return
+
+                # If the drawn polygon is completely inside the feature (not intersecting border),
+                # add it as a hole instead of trying to reshape
+                if intersects and not circumvents and feature_geom.contains(polygon_geom):
+                    if not QgsWkbTypes.isMultiType(feature_geom.wkbType()):
+                        # Single polygon - add hole
+                        polygon = feature_geom.asPolygon()
+                        polygon.append(closed_points)  # Add new ring to existing polygon
+                        new_geom = QgsGeometry.fromPolygonXY(polygon)
+                        self.layer.changeGeometry(feature.id(), new_geom)
+                        _info("Added new hole to polygon")
+                    else:
+                        # Multi-polygon - need to determine which part contains the new hole
+                        multi_polygon = feature_geom.asMultiPolygon()
+                        for i, part in enumerate(multi_polygon):
+                            part_geom = QgsGeometry.fromPolygonXY(part)
+                            if part_geom.contains(polygon_geom):
+                                multi_polygon[i].append(closed_points)  # Add hole to this part
+                                new_geom = QgsGeometry.fromMultiPolygonXY(multi_polygon)
+                                self.layer.changeGeometry(feature.id(), new_geom)
+                                _info(f"Added new hole to part {i + 1} of multi-polygon")
+                                break
+
+                    # Feature modified, clean up and return
+                    _apply_changes()
+                    return
 
         if self.drawing_mode:
             ring = self.points + [self.points[0]]
