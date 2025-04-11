@@ -91,6 +91,9 @@ class StreamReshapeTool(QgsMapTool):
         self.prev_shortcut = QShortcut(QKeySequence("["), self.canvas)
         self.prev_shortcut.activated.connect(self._navigate_prev)
 
+        self.repair_shortcut = QShortcut(QKeySequence("F"), self.canvas)
+        self.repair_shortcut.activated.connect(self._repair_selected_geometry)
+
         self.group_keys = {}
         for i in range(10):
             key = str(i)
@@ -417,31 +420,70 @@ class StreamReshapeTool(QgsMapTool):
                 self.layer.destroyEditCommand()
                 return
 
-            boundary_geom = QgsGeometry(feature_geom.constGet().boundary())
-            intersection = boundary_geom.intersection(reshape_line)
-            self.intersection_band.reset(QgsWkbTypes.PointGeometry)
-            if intersection and intersection.wkbType() == QgsWkbTypes.MultiPoint:
-                for pt in intersection.asMultiPoint():
-                    self.intersection_band.addPoint(pt)
-            elif intersection and intersection.wkbType() == QgsWkbTypes.Point:
-                self.intersection_band.addPoint(intersection.asPoint())
+            # Create a copy of the geometry to test the reshape operation
+            test_geom = QgsGeometry(feature_geom)
+            status = test_geom.reshapeGeometry(reshape_line.constGet())
 
-            status = feature_geom.reshapeGeometry(reshape_line.constGet())
             if status != QgsGeometry.OperationResult.Success:
                 _warn("Reshape failed. Ensure the line crosses the polygon boundary.")
                 self.layer.destroyEditCommand()
                 return
 
-            self.layer.changeGeometry(selected_fid, feature_geom)
-            _info("Polygon successfully reshaped.")
+            # Check if the resulting geometry would be valid
+            if not test_geom.isGeosValid():
+                _info("Reshape would create an invalid geometry. Attempting to merge overlapping parts...")
 
-        self.layer.endEditCommand()
-        self.points = []
-        self.streaming = False
-        self.rubber_band.reset(QgsWkbTypes.LineGeometry)
-        self.preview_band.reset(QgsWkbTypes.PolygonGeometry)
-        self.intersection_band.reset(QgsWkbTypes.PointGeometry)
-        self.canvas.refresh()
+                # Create a buffer of 0 to clean the geometry and merge overlapping parts
+                merged_geom = test_geom.buffer(0, 5)  # 5 segments for buffer approximation
+
+                if merged_geom.isGeosValid():
+                    self.layer.changeGeometry(selected_fid, merged_geom)
+                    _info("Successfully merged overlapping parts to create a valid geometry.")
+                else:
+                    # Try alternative approach with makeValid
+                    fixed_geom = test_geom.makeValid()
+                    if fixed_geom.isGeosValid():
+                        self.layer.changeGeometry(selected_fid, fixed_geom)
+                        _info("Successfully repaired geometry with makeValid().")
+                    else:
+                        _warn("Failed to create valid geometry after reshape attempt.")
+                        self.layer.destroyEditCommand()
+                        return
+            else:
+                # Normal case - reshape produced a valid geometry
+                self.layer.changeGeometry(selected_fid, test_geom)
+                _info("Polygon successfully reshaped.")
+
+        _apply_changes()
+
+    def _repair_selected_geometry(self):
+        selected = self.layer.selectedFeatures()
+        if len(selected) != 1:
+            _warn("Please select exactly one feature to repair.")
+            return
+
+        self.layer.beginEditCommand("Repair Geometry")
+        feature = selected[0]
+        geom = feature.geometry()
+
+        if geom.isGeosValid():
+            _info("Geometry is already valid.")
+            self.layer.destroyEditCommand()
+            return
+
+        # Try buffer(0) approach first
+        fixed_geom = geom.buffer(0, 5)
+        if not fixed_geom.isGeosValid():
+            # Try makeValid as backup
+            fixed_geom = geom.makeValid()
+
+        if fixed_geom.isGeosValid():
+            self.layer.changeGeometry(feature.id(), fixed_geom)
+            self.layer.endEditCommand()
+            _info("Geometry repaired successfully.")
+        else:
+            self.layer.destroyEditCommand()
+            _warn("Unable to repair geometry.")
 
     def _navigate(self, where_to="next"):
         if self.points:  # Reshape in progress; do nothing.
