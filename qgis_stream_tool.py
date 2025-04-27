@@ -45,7 +45,7 @@ class StreamReshapeTool(QgsMapTool):
         self.layer = iface.activeLayer()  # iface assumed to be available in QGIS environment
         self.points = []
         self.streaming = False
-        self.tolerance = 5
+        self.tolerance = 3  # metres
         self.current_cursor_pos = None
         self.selected_fid = None
 
@@ -65,7 +65,7 @@ class StreamReshapeTool(QgsMapTool):
         self.space_shortcut = QShortcut(QKeySequence(Qt.Key_Space), self.canvas)
         self.space_shortcut.activated.connect(self._add_vertex_from_cursor)
 
-        self.stream_enabled = False  # Streaming disabled by default
+        self.stream_enabled = True  # Streaming disabled by default
 
         self.toggle_shortcut = QShortcut(QKeySequence("R"), self.canvas)
         self.toggle_shortcut.activated.connect(self._toggle_stream_mode)
@@ -631,14 +631,6 @@ class StreamReshapeTool(QgsMapTool):
         selected_feature = self.layer.selectedFeatures()
         if not selected_feature:
             return
-
-        feature = selected_feature[0]
-        entry_id = feature['entry_id']
-        _info(f"Entry ID: {entry_id}")
-        for child in target_group.children():
-            if isinstance(child, QgsLayerTreeGroup) and 's2_' in child.name():
-                for crt_layer in child.children():
-                    crt_layer.setItemVisibilityChecked(entry_id in crt_layer.name())
 
     def _navigate_next(self):
         _info("Navigating to next feature.")
